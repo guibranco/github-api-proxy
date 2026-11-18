@@ -22,6 +22,16 @@ const maxPeriod = 90 * 24 * time.Hour
 //go:embed openapi.yaml
 var openAPISpec string
 
+// Icons for browsers visiting the admin host (Swagger UI). Design sources live in docs/images.
+var (
+	//go:embed assets/favicon.ico
+	faviconICO []byte
+	//go:embed assets/favicon.svg
+	faviconSVG []byte
+	//go:embed assets/apple-touch-icon.png
+	appleTouchIcon []byte
+)
+
 // swaggerUIVersion is the pinned swagger-ui-dist release served from jsDelivr.
 // To upgrade: bump it and refresh the three integrity hashes below
 // (openssl dgst -sha384 -binary FILE | openssl base64 -A on the npm tarball files).
@@ -37,6 +47,9 @@ const swaggerPage = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>github-api-proxy — API</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@` + swaggerUIVersion + `/swagger-ui.css"
         integrity="sha384-WlYgdmXYOOBWL5apwjDEZwN+U3HmXSSu5R6V5aGxEcf7z+KuRNwBhoxKVN1i3D5I" crossorigin="anonymous">
   <style>
@@ -111,6 +124,9 @@ func New(s *store.Store, token, version string, started time.Time, allowList All
 		spec: []byte(strings.Replace(openAPISpec, "{{VERSION}}", version, 1)), mux: http.NewServeMux()}
 	a.mux.HandleFunc("GET /health", a.health)
 	a.mux.HandleFunc("GET /openapi.yaml", a.openAPI)
+	a.mux.HandleFunc("GET /favicon.ico", staticAsset("image/x-icon", faviconICO))
+	a.mux.HandleFunc("GET /favicon.svg", staticAsset("image/svg+xml", faviconSVG))
+	a.mux.HandleFunc("GET /apple-touch-icon.png", staticAsset("image/png", appleTouchIcon))
 	a.mux.HandleFunc("GET /swagger", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
 	})
@@ -147,6 +163,16 @@ func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
 func (a *API) openAPI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
 	_, _ = w.Write(a.spec)
+}
+
+// staticAsset serves an embedded file. Icons change only with a release, so unlike
+// the API responses (no-store, set in ServeHTTP) they may be cached for a day.
+func staticAsset(contentType string, body []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(body)
+	}
 }
 
 func (a *API) swagger(w http.ResponseWriter, _ *http.Request) {

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.svg" alt="github-api-proxy" height="80">
+</p>
+
 # github-api-proxy
 
 🔀🐙 A transparent reverse proxy for the GitHub REST and GraphQL APIs. Clients
@@ -171,6 +175,11 @@ and the OpenAPI 3 document at `/openapi.yaml`. All endpoints except `/health` ne
 A ready-made Projects Monitor client is in
 [`integrations/projects-monitor`](integrations/projects-monitor) (same pattern as
 `WebhooksHandler.php`, secrets in `Src/secrets/githubApiProxy.secrets.php`).
+
+The admin host also serves the project icon at `/favicon.ico`, `/favicon.svg` and
+`/apple-touch-icon.png` (embedded in the binary, cached for a day). The proxy port serves none of them,
+so it stays a byte-for-byte pass-through to GitHub. Logo sources are in [`docs/images`](docs/images),
+including a `social-preview.png` for the repository's social preview setting.
 
 ## LogStream
 
