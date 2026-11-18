@@ -1,0 +1,26 @@
+# GitHub Pages site: http://guilherme.stracini.com.br/github-api-proxy/
+# Built by the classic Pages Jekyll build straight from main; README.md becomes the index page.
+
+title: github-api-proxy
+description: 🔀🐙 A transparent reverse proxy for the GitHub REST and GraphQL APIs — logs who calls what and when.
+theme: jekyll-theme-cayman
+show_downloads: true
+
+plugins:
+  - jemoji
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: false
+
+# Keep the Go sources, deploy scripts and build files out of the site build.
+exclude:
+  - cmd
+  - internal
+  - deploy
+  - integrations
+  - go.mod
+  - go.sum
+  - Dockerfile
+  - GitVersion.yml
