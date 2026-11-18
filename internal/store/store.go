@@ -70,7 +70,7 @@ type Store struct {
 func Open(dsn string, queueSize, batchSize int, interval time.Duration, retentionDays int, log *slog.Logger) (*Store, error) {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("invalid MYSQL_DSN: %w", err)
+		return nil, fmt.Errorf("invalid MySql--ConnectionString (expected user:pass@tcp(host:3306)/db): %w", err)
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
