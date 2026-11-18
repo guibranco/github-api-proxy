@@ -1,0 +1,279 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time: two quick merges to main must not race each other onto the host or into the
+# same version number.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+# Least privilege: the token is read-only everywhere except the release job, which needs contents: write.
+permissions:
+  contents: read
+
+# Every push to main is built, tested, deployed to a vinhedo node as a systemd service and then tagged
+# as a release. GitVersion computes the version from the commit messages (`+semver: major|minor|patch`,
+# default patch); it is baked into the binary and becomes the LogStream app_id. The tag is only created
+# after the deploy succeeded, so a failed deploy can simply be re-run and lands on the same version.
+#
+# Repository secrets:
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_PORT (optional)   — the vinhedo node and the deploy user
+#                                                                 created by deploy/scripts/bootstrap.sh
+#   SSH_KNOWN_HOSTS                                           — the host's public key(s) in known_hosts
+#                                                                 format (`ssh-keyscan -p PORT HOST`,
+#                                                                 verified against the fingerprints
+#                                                                 bootstrap.sh prints)
+#   GRIMOIRE_BASE_URL, GRIMOIRE_API_KEY                       — where the service reads every other
+#                                                                 setting and secret from at startup
+#   GRIMOIRE_ENVIRONMENT (optional)                           — Grimoire environment, default "production"
+jobs:
+  # ── 1. Build & test ──────────────────────────────────────────────────────────
+  build:
+    name: 🏗️ Build & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.gitversion.outputs.majorMinorPatch }}
+      informationalVersion: ${{ steps.gitversion.outputs.informationalVersion }}
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 🔧 Install GitVersion
+        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+        with:
+          versionSpec: "6.x"
+
+      - name: 🏷️ Determine Version Number
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+
+      - name: 🛡️ Check version is not already released
+        env:
+          VERSION: v${{ steps.gitversion.outputs.majorMinorPatch }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" > /dev/null; then
+            echo "::error::Tag ${VERSION} already exists but GitVersion still computes it. Refusing to overwrite a published release."
+            exit 1
+          fi
+          echo "Building ${VERSION}"
+
+      - name: 🐹 Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: 🧪 Test
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: 🏗️ Build and package linux/amd64 and linux/arm64
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.gitversion.outputs.majorMinorPatch }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            out="publish/${arch}"
+            mkdir -p "${out}"
+            GOOS=linux GOARCH="${arch}" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "${out}/github-api-proxy" ./cmd/github-api-proxy
+            # The unit, installer, bootstrap and NGINX template ship for bootstrap.sh — install.sh never
+            # installs them from the upload.
+            cp README.md deploy/systemd/github-api-proxy.service deploy/scripts/install.sh deploy/scripts/bootstrap.sh "${out}/"
+            cp deploy/nginx/github-api-proxy.conf "${out}/github-api-proxy.nginx.conf"
+            echo "${VERSION}" > "${out}/VERSION"
+            name="github-api-proxy-${VERSION}-linux-${arch}.tar.gz"
+            tar -C "${out}" -czf "dist/${name}" .
+            (cd dist && sha256sum "${name}" > "${name}.sha256")
+          done
+          ./publish/amd64/github-api-proxy --version
+          ls -l dist
+
+      - name: 📤 Upload release packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── 2. Deploy to the vinhedo node ────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy to vinhedo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+    environment: production
+
+    steps:
+      - name: 📥 Download release packages
+        uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: dist
+
+      - name: 🔑 Render environment file from secrets
+        env:
+          GRIMOIRE_BASE_URL: ${{ secrets.GRIMOIRE_BASE_URL }}
+          GRIMOIRE_API_KEY: ${{ secrets.GRIMOIRE_API_KEY }}
+          GRIMOIRE_ENVIRONMENT: ${{ secrets.GRIMOIRE_ENVIRONMENT }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          for required in GRIMOIRE_BASE_URL GRIMOIRE_API_KEY; do
+            if [[ -z "${!required}" ]]; then
+              echo "::error::Repository secret ${required} is not set"
+              exit 1
+            fi
+          done
+          umask 077
+          # systemd EnvironmentFile syntax: inside double quotes only backslash and the quote itself are
+          # special, so escaping those two keeps every secret byte-for-byte.
+          q() { local v=${1//\\/\\\\}; v=${v//\"/\\\"}; printf '"%s"' "${v}"; }
+          # Only the Grimoire bootstrap goes here: everything else is read from Grimoire at startup, and
+          # any other key written to this file would override the Grimoire value.
+          {
+            echo "# Rendered by the Deploy workflow for v${VERSION}; edit the repository secrets, not this file."
+            echo "Grimoire__BaseUrl=$(q "${GRIMOIRE_BASE_URL}")"
+            echo "Grimoire__ApiKey=$(q "${GRIMOIRE_API_KEY}")"
+            echo "Grimoire__Environment=$(q "${GRIMOIRE_ENVIRONMENT:-production}")"
+          } > github-api-proxy.env
+
+      - name: 🔑 Write SSH key and pinned host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || 22 }}
+        run: |
+          for required in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            if [[ -z "${!required}" ]]; then
+              echo "::error::Repository secret ${required} is not set (SSH_KNOWN_HOSTS: run 'ssh-keyscan -p ${SSH_PORT} ${SSH_HOST:-HOST}' from a trusted machine and check the fingerprints bootstrap.sh printed)"
+              exit 1
+            fi
+          done
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # The host key is pinned from a secret, never learned from the network on the runner: a spoofed
+          # SSH_HOST must not be able to receive the rendered secrets.
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName ${SSH_HOST}
+            Port ${SSH_PORT}
+            User ${SSH_USER}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: 🧭 Detect the node's CPU architecture
+        id: arch
+        run: |
+          machine="$(ssh deploy-target uname -m)"
+          case "${machine}" in
+            x86_64)          arch=amd64 ;;   # vinhedo1–4 (E2.1.Micro)
+            aarch64|arm64)   arch=arm64 ;;   # vinhedo5–6 (Ampere A1)
+            *) echo "::error::Unsupported architecture ${machine}"; exit 1 ;;
+          esac
+          echo "arch=${arch}" >> "$GITHUB_OUTPUT"
+          echo "Deploying the linux/${arch} build to a ${machine} node"
+
+      - name: 📦 Upload release and secrets
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ARCH: ${{ steps.arch.outputs.arch }}
+        run: |
+          ssh deploy-target \
+            "rm -rf ~/github-api-proxy-deploy && mkdir -p ~/github-api-proxy-deploy && chmod 700 ~/github-api-proxy-deploy"
+          scp \
+            "dist/github-api-proxy-${VERSION}-linux-${ARCH}.tar.gz" \
+            "dist/github-api-proxy-${VERSION}-linux-${ARCH}.tar.gz.sha256" \
+            github-api-proxy.env \
+            "deploy-target:~/github-api-proxy-deploy/"
+
+      - name: 🚀 Install and restart the service
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ARCH: ${{ steps.arch.outputs.arch }}
+        run: |
+          ssh deploy-target \
+            VERSION="${VERSION}" ARCH="${ARCH}" bash -s <<'ENDSSH'
+            set -euo pipefail
+            cd ~/github-api-proxy-deploy
+            pkg="github-api-proxy-${VERSION}-linux-${ARCH}.tar.gz"
+            echo "🔍 Verifying checksum"
+            sha256sum -c "${pkg}.sha256"
+            echo "📂 Extracting release"
+            rm -rf release && mkdir release
+            tar -C release -xzf "${pkg}"
+            chmod +x release/github-api-proxy
+            echo "⚙️  Installing v${VERSION}"
+            # Only the root-owned installer that bootstrap.sh put in place may run with sudo; the release
+            # and env file are passed to it as data. Its WARNING lines (unit/installer drift) are
+            # surfaced as workflow warnings below.
+            sudo /usr/local/sbin/github-api-proxy-install \
+              "${HOME}/github-api-proxy-deploy/release" \
+              "${HOME}/github-api-proxy-deploy/github-api-proxy.env" 2>&1 | tee install.log
+            test "${PIPESTATUS[0]}" -eq 0
+            grep '^WARNING:' install.log | sed 's/^WARNING: /::warning title=github-api-proxy-install::/' || true
+            echo "🧹 Cleaning up"
+            cd ~ && rm -rf ~/github-api-proxy-deploy
+          ENDSSH
+
+      - name: 🧹 Remove private key and secrets
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/config ~/.ssh/known_hosts github-api-proxy.env
+
+  # ── 3. Tag & GitHub release ──────────────────────────────────────────────────
+  release:
+    name: 📢 Tag & release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [build, deploy]
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Download release packages
+        uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: dist
+
+      - name: 🏷️ Create release
+        uses: ncipollo/release-action@v1
+        with:
+          skipIfReleaseExists: true
+          allowUpdates: false
+          draft: false
+          makeLatest: true
+          commit: ${{ github.sha }}
+          tag: v${{ needs.build.outputs.version }}
+          name: v${{ needs.build.outputs.version }}
+          generateReleaseNotes: true
+          artifacts: dist/*
+          body: |
+            ## github-api-proxy v${{ needs.build.outputs.version }}
+
+            Built from `${{ github.sha }}` (`${{ needs.build.outputs.informationalVersion }}`) and deployed to the vinhedo node.
+            LogStream entries from this release carry `app_id` `${{ needs.build.outputs.version }}`.
+
+            Attached: static `linux-amd64` (vinhedo1–4) and `linux-arm64` (vinhedo5–6) builds with the systemd unit,
+            `install.sh`, `bootstrap.sh` and the NGINX template.

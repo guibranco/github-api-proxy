@@ -1,0 +1,318 @@
+openapi: 3.0.3
+info:
+  title: github-api-proxy stats API
+  version: "{{VERSION}}"
+  description: |
+    Who called the GitHub API through the proxy, when, what and how it went.
+    Served on the admin listener (Proxy:AdminListenAddr), separate from the
+    proxy itself, and limited to the network allow-list like the proxy.
+    Every endpoint except `/health` needs `Authorization: Bearer <Admin:ApiToken>`.
+    Durations accept `90m`, `24h`, `7d`… (max `90d`).
+  contact:
+    url: https://github.com/guibranco/github-api-proxy
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+  - name: Stats
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Service health
+      security: []
+      responses:
+        "200":
+          description: The service is up (status is `degraded` when MySQL is unavailable; proxying continues)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /api/v1/summary:
+    get:
+      tags: [Stats]
+      summary: Totals for a period
+      parameters: [{ $ref: "#/components/parameters/period" }]
+      responses:
+        "200":
+          description: Totals
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/Summary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/callers:
+    get:
+      tags: [Stats]
+      summary: Requests per caller, busiest first
+      description: |
+        A caller is the GitHub login a token belongs to, `installation:<account>` for GitHub App
+        installation tokens, `app:<id>` for GitHub App JWTs, `token:<fingerprint>` while a new token
+        is being resolved, `invalid:<fingerprint>` for tokens GitHub rejects, or `anonymous`.
+      parameters:
+        - { $ref: "#/components/parameters/period" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        "200":
+          description: Callers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Caller" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/routes:
+    get:
+      tags: [Stats]
+      summary: Busiest endpoints
+      description: Paths are normalised, e.g. `/repos/{owner}/{repo}/pulls/{id}`.
+      parameters:
+        - { $ref: "#/components/parameters/period" }
+        - { $ref: "#/components/parameters/caller" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 20 } }
+      responses:
+        "200":
+          description: Routes
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Route" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/timeline:
+    get:
+      tags: [Stats]
+      summary: Requests, errors and latency per time bucket
+      parameters:
+        - { $ref: "#/components/parameters/period" }
+        - { $ref: "#/components/parameters/caller" }
+        - { name: bucket, in: query, schema: { type: string, enum: [minute, hour, day], default: hour } }
+      responses:
+        "200":
+          description: Buckets in ascending order (UTC)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/TimelinePoint" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/requests:
+    get:
+      tags: [Stats]
+      summary: Latest requests, newest first
+      parameters:
+        - { $ref: "#/components/parameters/period" }
+        - { $ref: "#/components/parameters/caller" }
+        - { name: method, in: query, schema: { type: string, example: GET } }
+        - { name: status, in: query, description: "Exact status (`404`) or class (`4xx`, `5xx`)", schema: { type: string, example: 5xx } }
+        - { name: route, in: query, schema: { type: string, example: "/repos/{owner}/{repo}/pulls/{id}" } }
+        - { name: before_id, in: query, description: Keyset pagination — pass the last id of the previous page, schema: { type: integer, format: int64 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+      responses:
+        "200":
+          description: Requests
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Request" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/rate-limits:
+    get:
+      tags: [Stats]
+      summary: Latest GitHub quota per caller and resource, most exhausted first
+      responses:
+        "200":
+          description: Rate limits seen in the last two hours whose window has not reset yet
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/RateLimit" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The Admin--ApiToken secret from Grimoire
+  parameters:
+    period:
+      name: period
+      in: query
+      description: How far back to look (`90m`, `24h`, `7d`; max `90d`)
+      schema: { type: string, default: 24h }
+    caller:
+      name: caller
+      in: query
+      description: Only this caller (as returned by /api/v1/callers)
+      schema: { type: string, example: guibranco }
+  responses:
+    BadRequest:
+      description: Invalid parameter
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or wrong bearer token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The caller's address is not in Network:AllowedSources
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string }
+              documentation_url: { type: string }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Envelope:
+      type: object
+      properties:
+        since: { type: string, format: date-time }
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string, example: 1.4.0 }
+        started_at: { type: string, format: date-time }
+        uptime_seconds: { type: integer }
+        database: { type: string, enum: [ok, error] }
+        writer:
+          type: object
+          properties:
+            queued: { type: integer }
+            dropped_since_start: { type: integer }
+            failing: { type: boolean }
+            last_error: { type: string }
+        allow_list:
+          type: object
+          properties:
+            allow_all: { type: boolean }
+            networks: { type: integer }
+    Summary:
+      type: object
+      properties:
+        requests: { type: integer }
+        client_errors: { type: integer }
+        server_errors: { type: integer }
+        upstream_failures: { type: integer }
+        rate_limited: { type: integer }
+        blocked: { type: integer, description: Requests refused by the network allow-list }
+        avg_duration_ms: { type: number }
+        max_duration_ms: { type: integer }
+        request_bytes: { type: integer }
+        response_bytes: { type: integer }
+        distinct_tokens: { type: integer }
+        distinct_client_ips: { type: integer }
+        first_request_at: { type: string, format: date-time, nullable: true }
+        last_request_at: { type: string, format: date-time, nullable: true }
+        by_status_class:
+          type: object
+          additionalProperties: { type: integer }
+          example: { "2xx": 1200, "4xx": 12 }
+    Caller:
+      type: object
+      properties:
+        caller: { type: string, example: guibranco }
+        token_kinds: { type: array, items: { type: string, enum: [none, pat, fine_grained_pat, oauth, app_user, app_installation, app_jwt, other] } }
+        requests: { type: integer }
+        errors: { type: integer }
+        avg_duration_ms: { type: number }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        distinct_tokens: { type: integer }
+        client_ips: { type: array, items: { type: string } }
+        user_agents: { type: array, items: { type: string } }
+    Route:
+      type: object
+      properties:
+        method: { type: string }
+        route: { type: string }
+        requests: { type: integer }
+        errors: { type: integer }
+        avg_duration_ms: { type: number }
+        max_duration_ms: { type: integer }
+        distinct_callers: { type: integer }
+    TimelinePoint:
+      type: object
+      properties:
+        bucket: { type: string, example: "2026-11-18T10:00:00Z" }
+        requests: { type: integer }
+        errors: { type: integer }
+        avg_duration_ms: { type: number }
+    Request:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        requested_at: { type: string, format: date-time }
+        duration_ms: { type: integer }
+        method: { type: string }
+        path: { type: string }
+        query: { type: string, nullable: true }
+        route: { type: string }
+        graphql_operation: { type: string, nullable: true }
+        status: { type: integer }
+        response_bytes: { type: integer }
+        caller: { type: string }
+        token_kind: { type: string }
+        token_fingerprint: { type: string, nullable: true, description: First 12 hex chars of the token's SHA-256 }
+        client_ip: { type: string }
+        user_agent: { type: string, nullable: true }
+        rate_limit_resource: { type: string, nullable: true }
+        rate_limit_limit: { type: integer, nullable: true }
+        rate_limit_remaining: { type: integer, nullable: true }
+        rate_limit_reset: { type: string, format: date-time, nullable: true }
+        github_request_id: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+    RateLimit:
+      type: object
+      properties:
+        caller: { type: string }
+        token_kind: { type: string }
+        token_fingerprint: { type: string, nullable: true }
+        client_ip: { type: string }
+        resource: { type: string, example: core }
+        limit: { type: integer }
+        remaining: { type: integer }
+        used: { type: integer, nullable: true }
+        used_percent: { type: number }
+        reset_at: { type: string, format: date-time }
+        seen_at: { type: string, format: date-time }

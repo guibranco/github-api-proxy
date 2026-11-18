@@ -1,0 +1,6 @@
+# Versions come from commit messages on main: "+semver: major|minor|patch" (default patch).
+# The Deploy workflow builds with the computed MajorMinorPatch, deploys it, then tags vX.Y.Z on main.
+# That version is baked into the binary (main.version) and is the LogStream app_id.
+workflow: GitHubFlow/v1
+mode: ContinuousDeployment
+tag-prefix: '[vV]'

@@ -1,0 +1,55 @@
+# /etc/systemd/system/github-api-proxy.service
+#
+# Installed by deploy/scripts/bootstrap.sh (one-time, as root); releases are then rolled out by the
+# root-owned /usr/local/sbin/github-api-proxy-install, which the Deploy workflow runs. Manual install:
+#
+#   sudo deploy/scripts/bootstrap.sh                                         # once per host
+#   go build -ldflags "-X main.version=1.0.0" -o /tmp/release/github-api-proxy ./cmd/github-api-proxy
+#   cp deploy/systemd/github-api-proxy.env /tmp/github-api-proxy.env        # then fill in Grimoire
+#   sudo /usr/local/sbin/github-api-proxy-install /tmp/release /tmp/github-api-proxy.env
+#   journalctl -u github-api-proxy -f
+#
+# Type=notify: the service reports READY=1 only once both listeners are up, so a deploy that cannot
+# start (Grimoire unreachable, invalid settings, port in use) is detected and rolled back.
+# /opt/github-api-proxy/bin is a symlink to the current release.
+
+[Unit]
+Description=GitHub API transparent proxy
+Documentation=https://github.com/guibranco/github-api-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=github-proxy
+Group=github-proxy
+WorkingDirectory=/opt/github-api-proxy/bin
+EnvironmentFile=/etc/github-api-proxy/env
+ExecStart=/opt/github-api-proxy/bin/github-api-proxy
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=90s
+# SIGTERM drains in-flight requests (25 s) and flushes MySQL rows and LogStream entries.
+TimeoutStopSec=40s
+LimitNOFILE=65536
+SyslogIdentifier=github-api-proxy
+
+# Hardening. On LXC targets drop ProtectSystem=strict and PrivateTmp=true — they fail to apply there.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
