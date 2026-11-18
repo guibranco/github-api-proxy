@@ -22,20 +22,68 @@ const maxPeriod = 90 * 24 * time.Hour
 //go:embed openapi.yaml
 var openAPISpec string
 
-// swaggerPage renders Swagger UI (assets from jsDelivr) against /openapi.yaml.
+// swaggerUIVersion is the pinned swagger-ui-dist release served from jsDelivr.
+// To upgrade: bump it and refresh the three integrity hashes below
+// (openssl dgst -sha384 -binary FILE | openssl base64 -A on the npm tarball files).
+const swaggerUIVersion = "5.35.0"
+
+// swaggerPage renders Swagger UI against /openapi.yaml using the standalone
+// layout, whose top bar carries Swagger UI's own light/dark switch. The first
+// visit follows the OS theme; the switch's choice is remembered per browser.
 const swaggerPage = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>github-api-proxy — API</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@` + swaggerUIVersion + `/swagger-ui.css"
+        integrity="sha384-WlYgdmXYOOBWL5apwjDEZwN+U3HmXSSu5R6V5aGxEcf7z+KuRNwBhoxKVN1i3D5I" crossorigin="anonymous">
+  <style>
+    body { margin: 0; }
+    html.dark-mode body { background: #1c1c21; }
+    /* keep the top bar for the theme switch; the spec URL box is not useful here */
+    .swagger-ui .topbar .download-url-wrapper { display: none; }
+  </style>
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@` + swaggerUIVersion + `/swagger-ui-bundle.js"
+          integrity="sha384-gjRm0bEPMeTmMh5jT2cHccIwCUZSTd8YC+j0d0sXw0MdGEfScduGpSyF3ZSSLkX9" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@` + swaggerUIVersion + `/swagger-ui-standalone-preset.js"
+          integrity="sha384-My2aDM4r2Mbm3ybHcubKm9O9U8FEjvF/O5nGvE9YK5dzqOTbWEKa79RPJ1krdMaF" crossorigin="anonymous"></script>
   <script>
-    window.ui = SwaggerUIBundle({ url: "openapi.yaml", dom_id: "#swagger-ui", persistAuthorization: true });
+    (function () {
+      var KEY = "github-api-proxy.swagger.theme";
+      var root = document.documentElement;
+      function stored() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+      function store(v) { try { localStorage.setItem(KEY, v); } catch (e) { /* storage unavailable */ } }
+
+      window.ui = SwaggerUIBundle({
+        url: "openapi.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        tryItOutEnabled: true,
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+        layout: "StandaloneLayout",
+        onComplete: function () {
+          // Re-apply the saved choice through Swagger UI's own switch so its icon stays in sync.
+          var want = stored();
+          var isDark = root.classList.contains("dark-mode");
+          var toggle = document.querySelector(".dark-mode-toggle button");
+          if (toggle && ((want === "dark" && !isDark) || (want === "light" && isDark))) {
+            toggle.click();
+          }
+          // Remember every later use of the switch.
+          new MutationObserver(function () {
+            store(root.classList.contains("dark-mode") ? "dark" : "light");
+          }).observe(root, { attributes: true, attributeFilter: ["class"] });
+        }
+      });
+    })();
   </script>
 </body>
 </html>`
