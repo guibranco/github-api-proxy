@@ -135,6 +135,7 @@ func New(s *store.Store, token, version string, started time.Time, allowList All
 	a.mux.HandleFunc("GET /api/v1/summary", a.auth(a.summary))
 	a.mux.HandleFunc("GET /api/v1/callers", a.auth(a.callers))
 	a.mux.HandleFunc("GET /api/v1/routes", a.auth(a.routes))
+	a.mux.HandleFunc("GET /api/v1/route-usage", a.auth(a.routeUsage))
 	a.mux.HandleFunc("GET /api/v1/timeline", a.auth(a.timeline))
 	a.mux.HandleFunc("GET /api/v1/requests", a.auth(a.requests))
 	a.mux.HandleFunc("GET /api/v1/rate-limits", a.auth(a.rateLimits))
@@ -265,6 +266,12 @@ func (a *API) routes(w http.ResponseWriter, r *http.Request) {
 	limit := intParam(r, "limit", 20, 1, 200)
 	caller := r.URL.Query().Get("caller")
 	a.withPeriod(w, r, func(since time.Time) (any, error) { return a.store.Routes(r.Context(), since, caller, limit) })
+}
+
+func (a *API) routeUsage(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 50, 1, 500)
+	caller := r.URL.Query().Get("caller")
+	a.withPeriod(w, r, func(since time.Time) (any, error) { return a.store.RouteUsage(r.Context(), since, caller, limit) })
 }
 
 func (a *API) timeline(w http.ResponseWriter, r *http.Request) {

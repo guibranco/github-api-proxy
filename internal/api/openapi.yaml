@@ -96,6 +96,32 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/route-usage:
+    get:
+      tags: [Stats]
+      summary: Requests per token, endpoint and status, busiest first
+      description: |
+        Groups requests by token fingerprint, method, normalised route and response status,
+        with the count, the last request time, the average duration and the total response size.
+        Requests without a token are grouped together under `anonymous`.
+      parameters:
+        - { $ref: "#/components/parameters/period" }
+        - { $ref: "#/components/parameters/caller" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+      responses:
+        "200":
+          description: Route usage
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/RouteUsage" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /api/v1/timeline:
     get:
       tags: [Stats]
@@ -271,6 +297,19 @@ components:
         avg_duration_ms: { type: number }
         max_duration_ms: { type: integer }
         distinct_callers: { type: integer }
+    RouteUsage:
+      type: object
+      properties:
+        caller: { type: string }
+        token_kind: { type: string }
+        token_fingerprint: { type: string, nullable: true, description: First 12 characters of the token hash }
+        method: { type: string }
+        route: { type: string }
+        status: { type: integer, description: "HTTP status, 0 when GitHub was not reached" }
+        requests: { type: integer }
+        last_request_at: { type: string, format: date-time }
+        avg_duration_ms: { type: number }
+        response_bytes: { type: integer, description: Total response size }
     TimelinePoint:
       type: object
       properties:

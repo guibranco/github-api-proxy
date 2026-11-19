@@ -163,6 +163,59 @@ func (s *Store) Routes(ctx context.Context, since time.Time, caller string, limi
 	return out, rows.Err()
 }
 
+// RouteUsage aggregates one normalised endpoint for one credential and
+// response status: how often it was called, when last, how fast and how much
+// data it returned.
+type RouteUsage struct {
+	Caller        string    `json:"caller"`
+	TokenKind     string    `json:"token_kind"`
+	TokenHash     *string   `json:"token_fingerprint"`
+	Method        string    `json:"method"`
+	Route         string    `json:"route"`
+	Status        int       `json:"status"`
+	Requests      int64     `json:"requests"`
+	LastRequestAt time.Time `json:"last_request_at"`
+	AvgDurationMs float64   `json:"avg_duration_ms"`
+	ResponseBytes int64     `json:"response_bytes"`
+}
+
+// RouteUsage groups requests by token, method, route and status, busiest
+// first (most recent first on ties).
+func (s *Store) RouteUsage(ctx context.Context, since time.Time, caller string, limit int) ([]RouteUsage, error) {
+	where, args := "r.requested_at >= ?", []any{since}
+	if caller != "" {
+		where += " AND " + callerExpr + " = ?"
+		args = append(args, caller)
+	}
+	args = append(args, limit)
+	// The caller and token kind are the same for every row of a token, so
+	// MAX() just picks them without breaking ONLY_FULL_GROUP_BY.
+	rows, err := s.db.QueryContext(ctx, `SELECT MAX(`+callerExpr+`), MAX(r.token_kind), LEFT(r.token_hash, 12),
+			r.method, r.route, r.status, COUNT(*), MAX(r.requested_at), AVG(r.duration_ms), SUM(r.response_bytes)
+		`+fromJoin+` WHERE `+where+`
+		GROUP BY r.token_hash, r.method, r.route, r.status
+		ORDER BY COUNT(*) DESC, MAX(r.requested_at) DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RouteUsage{}
+	for rows.Next() {
+		var u RouteUsage
+		var kind, th sql.NullString
+		var avg sql.NullFloat64
+		var size sql.NullInt64
+		if err := rows.Scan(&u.Caller, &kind, &th, &u.Method, &u.Route, &u.Status, &u.Requests,
+			&u.LastRequestAt, &avg, &size); err != nil {
+			return nil, err
+		}
+		u.TokenKind, u.TokenHash = kind.String, ptrS(th)
+		u.AvgDurationMs, u.ResponseBytes = round1(avg.Float64), size.Int64
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // TimelinePoint is one bucket.
 type TimelinePoint struct {
 	Bucket        string  `json:"bucket"`
