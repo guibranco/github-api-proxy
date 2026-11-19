@@ -152,6 +152,23 @@ class GitHubApiProxy
 
 
     /**
+     * Requests per token, method, route and status: count, last time,
+     * average duration and total response size, busiest first.
+     *
+     * @param string      $period e.g. 24h.
+     * @param string|null $caller Optional caller filter.
+     * @param int         $limit  Max rows.
+     *
+     * @return array
+     */
+    public function getRouteUsage(string $period='24h', ?string $caller=null, int $limit=50): array
+    {
+        return $this->doGet('api/v1/route-usage', ['period' => $period, 'caller' => $caller, 'limit' => $limit]);
+
+    }//end getRouteUsage()
+
+
+    /**
      * Requests and errors per bucket, for a chart.
      *
      * @param string      $period e.g. 24h.

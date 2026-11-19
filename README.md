@@ -168,6 +168,7 @@ and the OpenAPI 3 document at `/openapi.yaml`. All endpoints except `/health` ne
 | `GET /api/v1/summary?period=24h` | totals, 4xx/5xx, upstream failures, rate-limited, blocked, latency, bytes |
 | `GET /api/v1/callers?period=24h` | per caller: requests, errors, first/last seen, token kinds, IPs, user agents |
 | `GET /api/v1/routes?period=24h&caller=` | busiest normalised endpoints (`/repos/{owner}/{repo}/pulls/{id}`) |
+| `GET /api/v1/route-usage?period=24h&caller=` | per token, method, route and status: requests, last time, avg duration, total size |
 | `GET /api/v1/timeline?period=24h&bucket=hour` | requests/errors/latency per `minute`, `hour` or `day` |
 | `GET /api/v1/requests?status=5xx&caller=&before_id=` | latest requests (keyset pagination) |
 | `GET /api/v1/rate-limits` | latest quota per caller and resource, most exhausted first |
