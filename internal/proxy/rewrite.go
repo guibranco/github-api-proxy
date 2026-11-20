@@ -70,12 +70,15 @@ func Route(path string) string {
 		case i == 1 && segs[0] == "users":
 			out = append(out, "{username}")
 			continue
-		case i == 1 && (segs[0] == "orgs" || segs[0] == "enterprises"):
+		case i == 1 && (segs[0] == "orgs" || segs[0] == "organizations" || segs[0] == "enterprises"):
 			out = append(out, "{org}")
 			continue
-		case i > 0 && freeFormTail(segs, i):
-			out = append(out, "{path}") // rest of the path is free-form (file path, ref, range)
+		case i > 0 && freeFormTail(segs, i) != "":
+			out = append(out, freeFormTail(segs, i)) // rest of the path is free-form (file path, ref, branch, range)
 			return "/" + strings.Join(out, "/")
+		case prev == "workflows" && i >= 2 && segs[i-2] == "actions":
+			out = append(out, "{workflow_id}") // numeric ID or file name (ci.yml)
+			continue
 		case prev == "branches" || prev == "labels" || prev == "environments":
 			out = append(out, "{name}")
 			continue
@@ -91,17 +94,25 @@ func Route(path string) string {
 	return "/" + strings.Join(out, "/")
 }
 
-// freeFormTail reports whether segs[i:] is a free-form value such as a file
-// path (contents/a/b.md), a git ref (git/refs/heads/main) or a compare range.
-func freeFormTail(segs []string, i int) bool {
+// freeFormTail returns the placeholder for segs[i:] when it is a free-form
+// value such as a file path (contents/a/b.md), a git ref
+// (git/refs/heads/main), a compare range or a branch name that may contain
+// slashes (rules/branches/dependabot/nuget/x-1.0). It returns "" otherwise.
+func freeFormTail(segs []string, i int) string {
 	prev := segs[i-1]
 	switch prev {
 	case "contents", "readme", "tarball", "zipball", "compare", "matching-refs":
-		return true
+		return "{path}"
 	case "ref", "refs":
-		return i >= 2 && segs[i-2] == "git"
+		if i >= 2 && segs[i-2] == "git" {
+			return "{path}"
+		}
+	case "branches":
+		if i >= 2 && segs[i-2] == "rules" {
+			return "{branch}"
+		}
 	}
-	return false
+	return ""
 }
 
 var reGraphQLOp = regexp.MustCompile(`^\s*(query|mutation|subscription)\s*([A-Za-z_][A-Za-z0-9_]*)?`)
