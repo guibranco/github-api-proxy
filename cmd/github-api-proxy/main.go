@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -83,12 +84,36 @@ func run() (code int) {
 		"logstream", logStreamState, "logstream_app_id", cfg.LogStream.AppID)
 
 	// ── Network allow-list ────────────────────────────────────────────────
-	allowList := network.New(allowListSource(cfg, gm), nil, log)
+	// Grimoire's value is re-read only when a sentinel says changes were
+	// published; the timer below only re-resolves host names (dynamic DNS).
+	sources := newAllowListSource(cfg, gm)
+	allowList := network.New(sources.get, nil, log)
+	var watcher *grimoire.Watcher
+	if sources.live {
+		watcher = grimoire.NewWatcher(gm, nil, cfg.GrimoireRefreshInterval, func(ctx context.Context) error {
+			if err := sources.fetch(ctx); err != nil {
+				return err
+			}
+			return allowList.Refresh(ctx)
+		}, log)
+		// Baseline first, then the value: a publish in between is seen on the first check.
+		if err := watcher.Prime(ctx); err != nil {
+			log.Warn("Could not read Grimoire's sentinels, the first check will reload the allow-list",
+				"category", "startup", "error", err)
+		}
+		if err := sources.fetch(ctx); err != nil {
+			log.Error("Cannot read the network allow-list from Grimoire, refusing to start", "category", "startup", "error", err)
+			return 2
+		}
+	}
 	if err := allowList.Refresh(ctx); err != nil {
 		log.Error("Cannot load the network allow-list, refusing to start", "category", "startup", "error", err)
 		return 2
 	}
 	go allowList.Run(bg, cfg.RefreshInterval)
+	if watcher != nil {
+		go watcher.Run(bg)
+	}
 
 	// ── Storage ───────────────────────────────────────────────────────────
 	db, err := store.Open(cfg.MySQLDSN, cfg.LogQueueSize, cfg.LogBatchSize, cfg.LogFlushInterval, cfg.RetentionDays, log)
@@ -194,20 +219,41 @@ func run() (code int) {
 	return code
 }
 
-// allowListSource re-reads Network:AllowedSources from Grimoire on every
-// refresh (unless the environment pins it), so a new machine or a changed
-// home IP applies without a restart.
-func allowListSource(cfg *config.Config, gm *grimoire.Client) network.Source {
+// allowListSource holds the raw Network:AllowedSources. When it comes from
+// Grimoire (and the environment doesn't pin it), the sentinel watcher re-reads
+// it after each publish, so a new machine or a changed home IP applies without
+// a restart; the allow-list's own timer only re-resolves host names.
+type allowListSource struct {
+	gm   *grimoire.Client
+	live bool
+
+	mu  sync.RWMutex
+	raw string
+}
+
+func newAllowListSource(cfg *config.Config, gm *grimoire.Client) *allowListSource {
 	_, pinned := os.LookupEnv("Network__AllowedSources")
 	_, pinnedUpper := os.LookupEnv("NETWORK__ALLOWEDSOURCES")
-	if pinned || pinnedUpper || gm == nil {
-		return func(context.Context) (string, error) { return cfg.AllowedSources, nil }
+	return &allowListSource{gm: gm, live: gm != nil && !pinned && !pinnedUpper, raw: cfg.AllowedSources}
+}
+
+func (s *allowListSource) get(context.Context) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.raw, nil
+}
+
+// fetch re-reads the value from Grimoire; on error the previous value stays.
+func (s *allowListSource) fetch(ctx context.Context) error {
+	v, err := s.gm.Configuration(ctx, config.KeyAllowedSources)
+	if errors.Is(err, grimoire.ErrNotFound) {
+		return fmt.Errorf("%s was removed from Grimoire", config.KeyAllowedSources)
 	}
-	return func(ctx context.Context) (string, error) {
-		v, err := gm.Configuration(ctx, config.KeyAllowedSources)
-		if errors.Is(err, grimoire.ErrNotFound) {
-			return "", fmt.Errorf("%s was removed from Grimoire", config.KeyAllowedSources)
-		}
-		return v, err
+	if err != nil {
+		return err
 	}
+	s.mu.Lock()
+	s.raw = v
+	s.mu.Unlock()
+	return nil
 }

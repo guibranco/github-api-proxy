@@ -40,6 +40,10 @@ const (
 	KeyRefreshInterval = "Network:RefreshInterval"
 	KeyPublicHealth    = "Network:PublicHealth"
 
+	// KeyGrimoireRefreshInterval is how often Grimoire's sentinel keys are
+	// checked for published changes (a 304 while nothing changed).
+	KeyGrimoireRefreshInterval = "Grimoire:RefreshInterval"
+
 	KeyRetentionDays = "Storage:RetentionDays"
 	KeyQueueSize     = "Storage:QueueSize"
 	KeyBatchSize     = "Storage:BatchSize"
@@ -67,7 +71,7 @@ var SecretKeys = []string{KeyMySQLDSN, KeyAdminAPIToken, KeyLogStreamAPIToken}
 var allKeys = []string{
 	KeyListenAddr, KeyAdminListenAddr, KeyUpstreamURL, KeyPublicBaseURL, KeyTrustedProxies,
 	KeyUpstreamTimeout, KeySlowRequest, KeyRateLimitWarnPercent, KeyResolveIdentities,
-	KeyAllowedSources, KeyRefreshInterval, KeyPublicHealth,
+	KeyAllowedSources, KeyRefreshInterval, KeyPublicHealth, KeyGrimoireRefreshInterval,
 	KeyRetentionDays, KeyQueueSize, KeyBatchSize, KeyFlushInterval,
 	KeyLogStreamEnabled, KeyLogStreamServer, KeyLogStreamAPIKey, KeyLogStreamAppID, KeyLogStreamMinLevel,
 	KeyLogStreamTransport, KeyLogStreamUDPHost, KeyLogStreamUDPPort, KeyLogStreamUDPMax,
@@ -87,9 +91,12 @@ type Config struct {
 	ResolveIdentity      bool
 
 	// AllowedSources is the raw allow-list (IPs, CIDRs, host names; "*" disables it).
-	AllowedSources  string
+	AllowedSources string
+	// RefreshInterval is how often allow-list host names are re-resolved.
 	RefreshInterval time.Duration
 	PublicHealth    bool
+	// GrimoireRefreshInterval is how often Grimoire's sentinels are checked.
+	GrimoireRefreshInterval time.Duration
 
 	MySQLDSN         string
 	AdminAPIToken    string
@@ -296,6 +303,8 @@ func build(s settings, version string) (*Config, error) {
 		RefreshInterval: durv(KeyRefreshInterval, 5*time.Minute),
 		PublicHealth:    boolv(KeyPublicHealth, false),
 
+		GrimoireRefreshInterval: durv(KeyGrimoireRefreshInterval, 30*time.Second),
+
 		MySQLDSN:         s.str(KeyMySQLDSN, ""),
 		AdminAPIToken:    s.str(KeyAdminAPIToken, ""),
 		RetentionDays:    intv(KeyRetentionDays, 30),
@@ -346,6 +355,9 @@ func build(s settings, version string) (*Config, error) {
 	}
 	if cfg.RefreshInterval < 30*time.Second {
 		errs = append(errs, fmt.Errorf("%s must be at least 30s", KeyRefreshInterval))
+	}
+	if cfg.GrimoireRefreshInterval < 5*time.Second {
+		errs = append(errs, fmt.Errorf("%s must be at least 5s", KeyGrimoireRefreshInterval))
 	}
 	if cfg.RetentionDays < 1 {
 		errs = append(errs, fmt.Errorf("%s must be >= 1", KeyRetentionDays))

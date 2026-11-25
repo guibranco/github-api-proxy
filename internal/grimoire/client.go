@@ -82,20 +82,71 @@ func (c *Client) Secret(ctx context.Context, name string) (string, error) {
 	return body.Value, nil
 }
 
+// KeyState is what a conditional read saw: whether the key exists, its value
+// and the ETag to send next time.
+type KeyState struct {
+	Exists bool
+	Value  string
+	ETag   string
+}
+
+// ConfigurationIfChanged reads one configuration key, sending prev's ETag as
+// If-None-Match. On 304 it returns prev with notModified = true. A missing key
+// is a KeyState with Exists = false, not an error.
+func (c *Client) ConfigurationIfChanged(ctx context.Context, key string, prev *KeyState) (state KeyState, notModified bool, err error) {
+	header := http.Header{}
+	if prev != nil && prev.ETag != "" {
+		header.Set("If-None-Match", prev.ETag)
+	}
+	var body struct {
+		Value string `json:"value"`
+	}
+	resp, err := c.do(ctx, "consumer/configurations/"+url.PathEscape(key), header)
+	if err != nil {
+		return KeyState{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && prev != nil {
+		return *prev, true, nil
+	}
+	if err := c.decode(resp, key, &body); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return KeyState{}, false, nil
+		}
+		return KeyState{}, false, err
+	}
+	return KeyState{Exists: true, Value: body.Value, ETag: resp.Header.Get("ETag")}, false, nil
+}
+
 func (c *Client) get(ctx context.Context, path string, out any) error {
+	resp, err := c.do(ctx, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return c.decode(resp, path, out)
+}
+
+func (c *Client) do(ctx context.Context, path string, header http.Header) (*http.Response, error) {
 	u := c.baseURL + "/" + path + "?environment=" + url.QueryEscape(c.environment)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	for k, v := range header {
+		req.Header[k] = v
 	}
 	req.Header.Set("X-Api-Key", c.apiKey)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("Grimoire unreachable: %w", err)
+		return nil, fmt.Errorf("Grimoire unreachable: %w", err)
 	}
-	defer resp.Body.Close()
+	return resp, nil
+}
+
+func (c *Client) decode(resp *http.Response, path string, out any) error {
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out); err != nil {
