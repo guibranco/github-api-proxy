@@ -303,7 +303,7 @@ func build(s settings, version string) (*Config, error) {
 		RefreshInterval: durv(KeyRefreshInterval, 5*time.Minute),
 		PublicHealth:    boolv(KeyPublicHealth, false),
 
-		GrimoireRefreshInterval: durv(KeyGrimoireRefreshInterval, 30*time.Second),
+		GrimoireRefreshInterval: durv(KeyGrimoireRefreshInterval, 5*time.Minute),
 
 		MySQLDSN:         s.str(KeyMySQLDSN, ""),
 		AdminAPIToken:    s.str(KeyAdminAPIToken, ""),
