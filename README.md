@@ -81,7 +81,7 @@ Grimoire cannot list secrets, so names are fixed, `--` standing for `:`):
 | --- | --- | --- |
 | `Network:AllowedSources` | **required** | IPs, CIDRs and host names allowed to call the proxy — see [below](#network-allow-list) |
 | `Network:RefreshInterval` | `5m` | How often allow-list host names are re-resolved (dynamic DNS) |
-| `Grimoire:RefreshInterval` | `30s` | How often Grimoire's `Sentinel` / `Global:Sentinel` are checked for published changes (a `304` while nothing changed) |
+| `Grimoire:RefreshInterval` | `5m` | How often Grimoire's `Sentinel` / `Global:Sentinel` are checked for published changes (a `304` while nothing changed) |
 | `Network:PublicHealth` | `false` | `true` lets anyone reach `GET /health` on the admin listener (e.g. UptimeRobot) |
 | `Proxy:ListenAddr` | `127.0.0.1:8080` | Proxy listener (behind NGINX) |
 | `Proxy:AdminListenAddr` | `127.0.0.1:8081` | Stats API, `/health`, Swagger UI |
@@ -146,7 +146,7 @@ home.example.dyndns.org # local machines via dynamic DNS
 application, `Global:Sentinel` for inherited globals) every `Grimoire:RefreshInterval` with
 `If-None-Match`, so an unchanged check is two `304`s. When one changes it re-reads
 `Network:AllowedSources` and applies it straight away. With auto-publish on (Grimoire's default) that
-is within ~30 seconds of saving; with it off, after **Publish changes**. If Grimoire is unreachable
+is within ~5 minutes of saving; with it off, after **Publish changes**. If Grimoire is unreachable
 the current list stays and checks back off up to 5 minutes. Host names are still re-resolved every
 `Network:RefreshInterval` without calling Grimoire. Setting `Network__AllowedSources` in the
 environment pins the list and turns the watching off.
